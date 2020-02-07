@@ -1,0 +1,14 @@
+# Overview
+
+- Principal Investigator: Lindy Barrett 
+- Researcher: Sara Kosmaczewski
+- Experiment: RNA seq - Differential expression and splicing analysis.
+- Analyst: Victor Barrera [(vbarrera@hsph.harvard.edu)](mailto:vbarrera@hsph.harvard.edu)
+
+
+The most recent update of this html document occurred: `r date()`.
+
+The sections below provide code to reproduce the included results and plots.
+
+
+* * *

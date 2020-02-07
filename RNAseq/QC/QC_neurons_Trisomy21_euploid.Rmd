@@ -1,0 +1,349 @@
+---
+title: "QC - neurons Trisomy 21 & Euploid"
+author: "`r getOption('author')`"
+date: "`r Sys.Date()`"
+bibliography: bibliography.bib
+params:
+    outputDir: "."
+    se_file: "../data/se-2019-11-20.rds"
+---
+
+```{r, message = FALSE, warning = FALSE}
+# Avoid StartupMessages
+shhh <- suppressPackageStartupMessages
+```
+
+```{r}
+if(file.exists("_setup.R")){
+shhh(source("_setup.R"))
+}
+set.seed(1234567890L)
+```
+
+```{r}
+shhh(library(ggplot2))
+shhh(library(ggrepel))
+shhh(library(customPlots))
+shhh(library(DESeq2))
+shhh(library(DEGreport))
+shhh(library(reshape))
+shhh(library(DT))
+shhh(library(AnnotationHub))
+shhh(library(edgeR))
+```
+
+```{r header, child="_header.Rmd", eval=file.exists("_header.Rmd")}
+```
+
+```{r}
+pca_loadings = function(object, ntop=nrow(object)) {
+  rv <- matrixStats::rowVars(as.matrix(object))
+  select <- order(rv, decreasing = TRUE)[seq_len(min(ntop,
+      length(rv)))]
+  pca <- prcomp(t(as.matrix(object)[select, ]))
+  percentVar <- pca$sdev^2/sum(pca$sdev^2)
+  names(percentVar) = colnames(pca$x)
+  pca$percentVar = percentVar
+  return(pca)}
+
+'%!in%' <- function(x,y)!('%in%'(x,y))
+
+gg_color_hue <- function(n) {
+  hues = seq(15, 375, length = n + 1)
+  hcl(h = hues, l = 65, c = 100)[1:n]
+}
+```
+
+```{r set-random-seed}
+# set seed for reproducibility
+set.seed(1234567890L)
+```
+
+```{r load_data}
+se <- readRDS(params$se_file)
+```
+
+```{r}
+selected_samples <- colData(se) %>% as.data.frame() %>% tibble::rownames_to_column(var = "sample_id") %>% dplyr::filter(class == "Trisomy21_neuron" | class == "Euploid_neuron")
+
+se_selected <- se[,selected_samples$sample_id]
+```
+
+```{r}
+metrics_se_selected <- se_selected@metadata$metrics %>% tibble::remove_rownames()  %>% dplyr::filter(sample %in% selected_samples$sample_id) %>%  tibble::column_to_rownames(var = "sample")
+metrics_se_selected$sample_name <- rownames(metrics_se_selected)
+metadata_se_selected <- colData(se_selected) %>% as("data.frame") 
+metadata_se_selected$sample_name <- rownames(metadata_se_selected)
+counts_se_selected <- assay(se_selected)
+summarydata_se_selected <- metrics_se_selected %>% dplyr::inner_join(metadata_se_selected, by = "sample_name", keep = TRUE)
+rownames(summarydata_se_selected) <- summarydata_se_selected$sample_name
+counts_se_selected <- counts_se_selected[rowSums(counts_se_selected)>0,]
+```
+
+# QC {.tabset}
+
+## Total reads
+
+We can observe a high variability in the number of total reads between the different samples.
+
+```{r plot_total_reads}
+ggplot(data=summarydata_se_selected, mapping = aes(x = rownames(summarydata_se_selected), y = (totalReads / 1e6L), fill = class)) +
+    theme_bw(base_size=10) +
+    theme(panel.grid.major = element_line(size = .5, color = "grey"),
+          axis.text.x = element_text(angle=90)) +
+    geom_bar(stat="identity") + coord_flip() +
+    ylab("Total reads (M)") + xlab("") + geom_hline(yintercept = 10L)
+``` 
+
+## Mapped reads
+
+As with the total number of reads, we observe a high variability in the number of mapped reads for all the samples.
+
+```{r plot_mapped_reads}
+ggplot(data=summarydata_se_selected, mapping = aes(x = rownames(summarydata_se_selected), y = (mappedReads / 1e6L), fill = class)) +
+    theme_bw(base_size=10) +
+    theme(panel.grid.major = element_line(size = .5, color = "grey"),
+          axis.text.x = element_text(angle=90)) +
+    geom_bar(stat="identity") + coord_flip() +
+    ylab("Mapped reads (M)") + xlab("") + geom_hline(yintercept = 10L)
+```
+
+## Mapping rate
+
+The genomic mapping rate represents the percentage of reads mapping to the reference genome. Low mapping rates are indicative of sample contamination, poor sequencing quality or other artifacts.
+
+Even though the observed variability in the number of reads, we see a high mapping rate (>80%) indicating that most of the reads are mapped. One sample is below the 80% mapping rate.
+
+```{r plot_mapping_rate}
+ggplot(data=summarydata_se_selected, mapping = aes(x = rownames(summarydata_se_selected), y = (mappedReads*100 / totalReads),fill = class)) +
+    theme_bw(base_size=10) +
+    theme(panel.grid.major = element_line(size = .5, color = "grey"),
+          axis.text.x = element_text(angle=90)) +
+    geom_bar(stat="identity") + coord_flip() +
+    ylab("Mapping rate") + xlab("") +  geom_hline(yintercept = 80L)
+
+```
+
+## Number of genes detected
+
+The number of genes detected in each sample is good.
+
+```{r plot_genes_detected}
+dd = data.frame(Name=colnames(counts_se_selected), Genes.Detected = colSums(counts_se_selected > 0))
+dd <- dd %>% dplyr::inner_join(metadata_se_selected, by = c("Name"="sample_name"))
+ggplot(dd, aes(x=Name, y=Genes.Detected,fill = class)) +
+    geom_bar(stat="identity") + coord_flip() + 
+    theme_bw(base_size=10) + 
+    theme(panel.grid.major = element_line(size = .5, color = "grey"),
+          axis.text.x = element_text(angle=90)) +
+    ylab("genes detected") + xlab("") +  geom_hline(yintercept = 10e3L)
+```
+
+## Gene detection saturation
+
+We should observe a linear trend in the number of genes detected with the number of mapped reads, which indicates that the sample input was not overloaded.
+
+We observe a correct trend for the number of genes detected.
+
+```{r plot_gene_saturation}
+dd = data.frame(Mapped=summarydata_se_selected[colnames(counts_se_selected),]$mappedReads, Genes.Detected = colSums(counts_se_selected > 0))
+dd <- dd %>% tibble::rownames_to_column(var = "sample_name") %>% dplyr::inner_join(metadata_se_selected)
+ggplot(dd, aes(x=Mapped, y=Genes.Detected)) + 
+    geom_point(aes(color = class)) +
+    theme_bw(base_size=10) +
+    theme(panel.grid.major = element_line(size = .5, color = "grey"),
+          axis.text.x = element_text(angle=90)) +
+    ylab("genes detected") + xlab("reads mapped") 
+
+
+```
+
+
+## Exonic mapping rate
+
+Ideally, at least 60% of total reads should map to exons. We observe that most of the samples exceed 60%.
+
+```{r plot_exonic_mapping_rate}
+
+ggplot(data=summarydata_se_selected, mapping = aes(x = rownames(summarydata_se_selected), y = exonicRate, fill = class)) +
+    theme_bw(base_size=10) +
+    theme(panel.grid.major = element_line(size = .5, color = "grey"),
+          axis.text.x = element_text(angle=90)) +
+    geom_bar(stat="identity") + coord_flip() +
+    ylab("Exonic rate") + xlab("") +  geom_hline(yintercept = 0.6)
+```
+
+
+## Intronic mapping rate
+
+The majority of reads should map to exons and not introns.
+
+Although not worrying, we observe around 20-25% of intronic mapping rate.
+
+```{r plot_intronic_mapping_rate}
+ggplot(data=summarydata_se_selected, mapping = aes(x = rownames(summarydata_se_selected), y = intronicRate, fill = class)) +
+    theme_bw(base_size=10) +
+    theme(panel.grid.major = element_line(size = .5, color = "grey"),
+          axis.text.x = element_text(angle=90)) +
+    geom_bar(stat="identity") + coord_flip() +
+    ylab("Intronic rate") + xlab("") + ylim(0,1)
+```
+
+
+## rRNA mapping rate
+
+Samples should have a ribosomal RNA (rRNA) contamination rate below 10%.
+
+Samples show no ribosomal RNA.
+
+```{r plot_rrna_mapping_rate}
+ggplot(data=summarydata_se_selected, mapping = aes(x = rownames(summarydata_se_selected), y = rRnaRate, fill = class)) +
+    theme_bw(base_size=10) +
+    theme(panel.grid.major = element_line(size = .5, color = "grey"),
+          axis.text.x = element_text(angle=90)) +
+    geom_bar(stat="identity") + coord_flip() +
+    ylab("rRNA rate") + xlab("") +  geom_hline(yintercept = 0.1)
+```
+
+
+## 5'->3' bias
+
+The 5'->3' bias represents the possible uneven distribution of reads between the start and the end of the transcript. 
+
+We observe some bias but nothing concerning.
+
+```{r plot_53_bias}
+ggplot(data=summarydata_se_selected, mapping = aes(x = rownames(summarydata_se_selected), y = x5_3Bias, fill = class)) +
+    theme_bw(base_size=10) +
+    theme(panel.grid.major = element_line(size = .5, color = "grey"),
+          axis.text.x = element_text(angle=90)) +
+    geom_bar(stat="identity") + coord_flip() + 
+    ylab("5'->3' bias") + xlab("") +  geom_hline(yintercept = 1L)
+```
+
+
+## Counts per gene
+
+The samples show quite a different distribution of counts per gene. Samples will be normalized during downstream analysis.
+
+```{r plot_counts_per_gene, message = FALSE}
+melted = melt(counts_se_selected) 
+colnames(melted) = c("gene","sample", "count")
+melted$sample = factor(melted$sample)
+melted = melted[order(melted$sample),]
+melted$count = log(melted$count +1)
+melted <- melted %>% dplyr::inner_join(metadata_se_selected, by = c("sample"="sample_name"))
+
+p <- ggplot(melted, aes(x=sample, y=count, fill = class)) + geom_boxplot() +
+    theme_bw(base_size=10) +
+    theme(panel.grid.major = element_line(size = .5, color = "grey"),
+          axis.text.x = element_text(angle=90)) + xlab("")
+p
+```
+
+# Sample similarity analysis
+
+## Principal component analysis (PCA){.tabset}
+
+A PCA (Principal Component Analysis) performs a transformation over the data in order to obtain orthogonal vectors in such a way that the first principal component has the largest possible variance (that is, accounts for as much of the variability in the data as possible), and each succeeding component in turn has the highest variance possible under the constraint that it is orthogonal to the preceding components. 
+
+Plotting the samples in this transformed system show which samples are more similar.
+
+We use colors for the group.
+
+We can see that samples separate by the group (genotype). One sample separates from its corresponding group.
+
+We don't observe much difference using the top 700 variable genes. Indicating that the differences are not located just in the top variable genes.
+
+```{r}
+dds = DESeqDataSetFromMatrix(countData=counts_se_selected, colData=summarydata_se_selected[colnames(counts_se_selected),], design=~1)
+geoMeans = apply(counts_se_selected, 1, function(row) if (all(row == 0)) 0 else
+                 exp(mean(log(row[row != 0]))))
+dds = estimateSizeFactors(dds, geoMeans=geoMeans)
+dds = DESeq(dds)
+vst_dds = DESeq2::varianceStabilizingTransformation(dds)
+pc = pca_loadings(assay(vst_dds))
+comps = data.frame(pc$x)
+comps$Name = rownames(comps)
+summarydata_se_selected$Name = rownames(summarydata_se_selected)
+comps = comps %>% left_join(summarydata_se_selected, by=c("Name"))
+colorby = "mappedReads"
+shapeby = NULL
+```
+
+
+### All genes
+```{r}
+p <- customPlots::pca_plot_custom(pc,comps,1,2,colorby, shapeby,highlight = comps, textby = "Name")
+print(p)
+```
+
+### Top 700 variable genes
+
+```{r}
+pc = pca_loadings(assay(vst_dds), ntop = 700)
+comps = data.frame(pc$x)
+comps$Name = rownames(comps)
+comps = comps %>% left_join(summarydata_se_selected, by=c("Name"))
+colorby = "group"
+shapeby = NULL
+```
+
+```{r}
+p <- customPlots::pca_plot_custom(pc,comps,1,2,colorby,shapeby, highlight = comps, textby = "Name")
+print(p)
+```
+
+### Covariate Analysis
+
+We don't observe specific covariates that associate with the PCA distribution. This indicates that there are not strong confounders in this dataset.
+
+```{r}
+DEGreport::degCovariates(assay(vst_dds), metadata = as.data.frame(summarydata_se_selected)[colnames(vst_dds),])
+```
+
+
+# Check trisomy 21 genes
+
+We plot the expression of the genes located in chromosome 21. We plot the TPM counts as they normalized for library size.
+
+
+```{r}
+ah <- AnnotationHub()
+ahDb <- query(ah, pattern = c("Homo sapiens","EnsDb") )
+
+id <- ahDb %>% 
+     mcols() %>%  
+        rownames() %>%
+        tail(n = 1)
+
+## Download the appropriate Ensembldb database
+ahEnsdb <- ahDb[[id]]
+
+rows <- genes(ahEnsdb)  %>% 
+    as.data.frame() %>% 
+    dplyr::mutate(gene_name = toupper(gene_name)) 
+    
+```
+
+```{r}
+counts_tpm_se_selected <- assay(se_selected,'tpm')
+
+chrom_21_genes <- rows %>% dplyr::filter(seqnames == "21" & gene_id %in% rownames(assay(vst_dds)))
+chrom_21_genes_cts <- counts_tpm_se_selected[chrom_21_genes$gene_id,] %>% log1p()
+
+chrom_21_genes_cts_gather <- chrom_21_genes_cts %>% as.data.frame() %>% tibble::rownames_to_column(var = "gene_id") %>% 
+  tidyr::gather(sample_name,counts,-gene_id) %>% dplyr::inner_join(metadata_se_selected, by = "sample_name")
+
+p <- ggplot(chrom_21_genes_cts_gather, aes(x=sample_name, y=counts, fill = class)) + geom_boxplot() +
+    theme_bw(base_size=10) +
+    theme(panel.grid.major = element_line(size = .5, color = "grey"),
+          axis.text.x = element_text(angle=90)) + xlab("") + ylab("TPM counts (log)")
+p
+```
+
+# Session 
+
+```{r header, child="_footer.Rmd", eval=file.exists("_footer.Rmd")}
+```
+
